@@ -867,6 +867,7 @@ const Subprocess = struct {
             env.remove("GSK_RENDERER");
         }
 
+        log.info("command: {s}", .{cfg.command orelse "null"});
         // Setup our shell integration, if we can.
         const integrated_shell: ?shell_integration.Shell, const shell_command: []const u8 = shell: {
             const default_shell_command = cfg.command orelse switch (builtin.os.tag) {
