@@ -26,6 +26,10 @@ const Pty = ptypkg.Pty;
 const EnvMap = std.process.EnvMap;
 const windows = internal_os.windows;
 
+const c_import = @cImport({
+    @cInclude("wordexp.h");
+});
+
 const log = std.log.scoped(.io_exec);
 
 /// The termios poll rate in milliseconds.
@@ -48,6 +52,26 @@ pub fn init(
 
 pub fn deinit(self: *Exec) void {
     self.subprocess.deinit();
+}
+
+/// Escape illegal characters as defined in https://man7.org/linux/man-pages/man3/wordexp.3.html
+pub fn posixShellEscapeChars(input: []const u8, allocator: Allocator) ![*]const u8 {
+    var output_buffer = try allocator.alloc(u8, input.len * 2); // Worst case
+    var output_index: usize = 0;
+
+    for (input) |c| {
+        switch (c) {
+            '|', '&', ';', '<', '>', '(', ')', '{', '}' => {
+                output_buffer[output_index] = '\\';
+                output_index += 1;
+            },
+            else => {},
+        }
+        output_buffer[output_index] = c;
+        output_index += 1;
+    }
+
+    return output_buffer[0..output_index].ptr;
 }
 
 /// Call to initialize the terminal state as necessary for this backend.
@@ -868,6 +892,7 @@ const Subprocess = struct {
         }
 
         log.info("command: {s}", .{cfg.command orelse "null"});
+
         // Setup our shell integration, if we can.
         const integrated_shell: ?shell_integration.Shell, const shell_command: []const u8 = shell: {
             const default_shell_command = cfg.command orelse switch (builtin.os.tag) {
@@ -1026,18 +1051,31 @@ const Subprocess = struct {
 
                 try args.append(cmd);
                 try args.append("/C");
+                try args.append(shell_command);
             } else {
                 // We run our shell wrapped in `/bin/sh` so that we don't have
                 // to parse the command line ourselves if it has arguments.
                 // Additionally, some environments (NixOS, I found) use /bin/sh
                 // to setup some environment variables that are important to
                 // have set.
-                try args.append("/bin/sh");
-                if (internal_os.isFlatpak()) try args.append("-l");
-                try args.append("-c");
-            }
+                var we: c_import.wordexp_t = undefined;
+                
+                const result = c_import.wordexp(try posixShellEscapeChars(shell_command, alloc), &we, 0);
 
-            try args.append(shell_command);
+                if (result != 0) {
+                    log.err("C Wordexp exited with {}", .{result});
+                    return error.TODO;
+                }
+
+                defer c_import.wordfree(&we);
+
+                for (0..we.we_wordc) |i| {
+                    try args.append(std.mem.span(we.we_wordv[i]));
+                }
+
+                break :args try args.toOwnedSlice();
+            }
+                
             break :args try args.toOwnedSlice();
         };
 
