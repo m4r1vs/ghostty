@@ -50,6 +50,26 @@ pub fn deinit(self: *Exec) void {
     self.subprocess.deinit();
 }
 
+/// Escape illegal characters as defined in https://man7.org/linux/man-pages/man3/wordexp.3.html
+pub fn posixShellEscapeChars(input: []const u8, allocator: Allocator) ![]const u8 {
+    var output_buffer = try allocator.alloc(u8, input.len * 2); // Worst case
+    var output_index: usize = 0;
+
+    for (input) |c| {
+        switch (c) {
+            '|', '&', ';', '<', '>', '(', ')', '{', '}' => {
+                output_buffer[output_index] = '\\';
+                output_index += 1;
+            },
+            else => {},
+        }
+        output_buffer[output_index] = c;
+        output_index += 1;
+    }
+
+    return output_buffer[0..output_index];
+}
+
 /// Call to initialize the terminal state as necessary for this backend.
 /// This is called before any termio begins. This should not be called
 /// after termio begins because it may put the internal terminal state
@@ -1036,7 +1056,7 @@ const Subprocess = struct {
                 try args.append("-c");
             }
 
-            try args.append(shell_command);
+            try args.append(try posixShellEscapeChars(shell_command, alloc));
             break :args try args.toOwnedSlice();
         };
 
